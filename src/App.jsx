@@ -459,7 +459,7 @@ export default function KasirApp() {
   const reportCount = reportData.rangeOrders.length;
   const reportAvg = reportCount ? reportTotal / reportCount : 0;
 
-  const topProducts = useMemo(() => {
+  const productSales = useMemo(() => {
     const map = {};
     reportData.rangeOrders.forEach((o) => {
       o.items.forEach((it) => {
@@ -468,8 +468,10 @@ export default function KasirApp() {
         map[it.name].revenue += it.price * it.qty;
       });
     });
-    return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, 5);
+    return Object.values(map).sort((a, b) => b.qty - a.qty);
   }, [reportData]);
+  const totalQtySold = productSales.reduce((s, p) => s + p.qty, 0);
+  const topProducts = productSales;
 
   function exportReportExcel() {
     const wb = XLSX.utils.book_new();
@@ -479,6 +481,7 @@ export default function KasirApp() {
       [],
       ["Total Omzet", reportTotal],
       ["Jumlah Transaksi", reportCount],
+      ["Produk Terjual (pcs)", totalQtySold],
       ["Rata-rata per Transaksi", Math.round(reportAvg)],
     ]);
     XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
@@ -517,10 +520,11 @@ export default function KasirApp() {
     doc.text(`Laporan Penjualan · ${reportData.rangeLabel}`, 14, 23);
     doc.text(`Total Omzet: ${rupiah(reportTotal)}`, 14, 30);
     doc.text(`Jumlah Transaksi: ${reportCount}`, 14, 35);
-    doc.text(`Rata-rata per Transaksi: ${rupiah(reportAvg)}`, 14, 40);
+    doc.text(`Produk Terjual: ${totalQtySold} pcs`, 14, 40);
+    doc.text(`Rata-rata per Transaksi: ${rupiah(reportAvg)}`, 14, 45);
 
     autoTable(doc, {
-      startY: 46,
+      startY: 51,
       head: [["Nota", "Tanggal", "Pembeli", "Tipe", "Total", "Metode"]],
       body: reportData.rangeOrders.map((o) => [
         o.notaNumber || "-",
@@ -944,7 +948,7 @@ export default function KasirApp() {
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Total Omzet</p>
               <p className="text-sm sm:text-base font-bold font-mono truncate">{rupiah(reportTotal)}</p>
@@ -952,6 +956,10 @@ export default function KasirApp() {
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Transaksi</p>
               <p className="text-sm sm:text-base font-bold font-mono">{reportCount}</p>
+            </div>
+            <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
+              <p className="text-[10px] text-[#9C7885]">Produk Terjual</p>
+              <p className="text-sm sm:text-base font-bold font-mono">{totalQtySold} pcs</p>
             </div>
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Rata-rata</p>
@@ -965,11 +973,14 @@ export default function KasirApp() {
           </div>
 
           <div className="bg-white border border-[#F0D3DE] rounded-xl p-4">
-            <h3 className="text-xs font-semibold text-[#9C7885] uppercase tracking-wide mb-3">Produk Terlaris</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-semibold text-[#9C7885] uppercase tracking-wide">Rincian Produk Terjual</h3>
+              {productSales.length > 0 && <span className="text-[10px] text-[#9C7885]">{productSales.length} produk · {totalQtySold} pcs</span>}
+            </div>
             {topProducts.length === 0 ? (
               <p className="text-sm text-[#9C7885] text-center py-6">Belum ada transaksi di periode ini.</p>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 max-h-80 overflow-y-auto">
                 {topProducts.map((p, i) => (
                   <div key={p.name} className="flex items-center gap-3">
                     <div className="w-6 h-6 rounded-full bg-[#FBEAF1] flex items-center justify-center text-[10px] font-bold text-[#D6336C] shrink-0">{i + 1}</div>
