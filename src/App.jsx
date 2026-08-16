@@ -2,11 +2,39 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Plus, Minus, Trash2, X, Coffee, Receipt, Package, History,
   Pencil, Check, Lock, LogOut, UserPlus, Shield, User, Delete, ClipboardList,
+  Tag, ImagePlus, ImageOff,
 } from "lucide-react";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const rupiah = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const EMOJIS = ["☕", "🥐", "🍰", "🧋", "🍫", "🥤", "🍩", "🥯", "🧁", "🍪"];
+
+// Resize + convert an uploaded image file to a compact base64 data URL
+function resizeImageFile(file, maxDim = 500) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Gagal membaca file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("File bukan gambar yang valid"));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+          else { width = Math.round((width * maxDim) / height); height = maxDim; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 
 // Polyfill window.storage using localStorage so this works as a standalone deployed site
@@ -38,8 +66,9 @@ export default function KasirApp() {
   const [tab, setTab] = useState("kasir");
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [settings, setSettings] = useState({ taxPercent: 0, shopName: "Coffee Shop Saya" });
+  const [settings, setSettings] = useState({ taxPercent: 0, shopName: "Coffee Shop Saya", logoUrl: "" });
   const [staff, setStaff] = useState([]);
+  const [discounts, setDiscounts] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -61,6 +90,7 @@ export default function KasirApp() {
 
   const [productModal, setProductModal] = useState(null);
   const [staffModal, setStaffModal] = useState(null); // {id?, name, pin, role}
+  const [discountModal, setDiscountModal] = useState(null); // {id?, name, type, value, productIds, active}
 
   useEffect(() => {
     (async () => {
@@ -70,6 +100,7 @@ export default function KasirApp() {
         ["settings", setSettings],
         ["staff", setStaff],
         ["activityLog", setActivityLog],
+        ["discounts", setDiscounts],
       ]) {
         try {
           const r = await window.storage.get(key);
@@ -85,6 +116,7 @@ export default function KasirApp() {
   useEffect(() => { if (loaded) window.storage.set("settings", JSON.stringify(settings)).catch(() => {}); }, [settings, loaded]);
   useEffect(() => { if (loaded) window.storage.set("staff", JSON.stringify(staff)).catch(() => {}); }, [staff, loaded]);
   useEffect(() => { if (loaded) window.storage.set("activityLog", JSON.stringify(activityLog)).catch(() => {}); }, [activityLog, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("discounts", JSON.stringify(discounts)).catch(() => {}); }, [discounts, loaded]);
 
   function logActivity(action, detail) {
     setActivityLog((prev) => [
@@ -149,16 +181,32 @@ export default function KasirApp() {
     return products.filter((p) => (p.category || "Lainnya") === activeCategory);
   }, [products, activeCategory]);
 
+  // Best active promo (if any) applicable to a given product
+  function bestDiscountFor(productId, price) {
+    const applicable = discounts.filter((d) => d.active !== false && (d.productIds || []).includes(productId));
+    let bestCut = 0;
+    let bestLabel = null;
+    applicable.forEach((d) => {
+      const cut = d.type === "percent" ? (price * (Number(d.value) || 0)) / 100 : (Number(d.value) || 0);
+      if (cut > bestCut) { bestCut = cut; bestLabel = d.name; }
+    });
+    bestCut = Math.min(bestCut, price);
+    return { cut: bestCut, label: bestLabel };
+  }
+
   const cartLines = useMemo(() => {
     return cart.map((c) => {
       const prod = products.find((p) => p.id === c.productId);
-      return prod ? { ...prod, qty: c.qty } : null;
+      if (!prod) return null;
+      const { cut, label } = bestDiscountFor(prod.id, prod.price);
+      return { ...prod, qty: c.qty, discountCut: cut, discountLabel: label, finalPrice: Math.max(prod.price - cut, 0) };
     }).filter(Boolean);
-  }, [cart, products]);
+  }, [cart, products, discounts]);
 
   const subtotal = cartLines.reduce((s, l) => s + l.price * l.qty, 0);
-  const discount = Math.min(Number(discountInput) || 0, subtotal);
-  const taxable = subtotal - discount;
+  const promoDiscountTotal = cartLines.reduce((s, l) => s + l.discountCut * l.qty, 0);
+  const discount = Math.min(Number(discountInput) || 0, subtotal - promoDiscountTotal);
+  const taxable = subtotal - promoDiscountTotal - discount;
   const tax = (taxable * (Number(settings.taxPercent) || 0)) / 100;
   const total = taxable + tax;
   const cash = Number(cashInput) || 0;
@@ -182,8 +230,11 @@ export default function KasirApp() {
     if (payMethod === "Tunai" && cash < total) return;
     const record = {
       id: uid(), timestamp: Date.now(),
-      items: cartLines.map((l) => ({ name: l.name, price: l.price, qty: l.qty, icon: l.icon })),
-      subtotal, discount, tax, total, payMethod,
+      items: cartLines.map((l) => ({
+        name: l.name, price: l.finalPrice, originalPrice: l.price, qty: l.qty,
+        icon: l.icon, discountLabel: l.discountLabel,
+      })),
+      subtotal, promoDiscount: promoDiscountTotal, discount, tax, total, payMethod,
       cash: payMethod === "Tunai" ? cash : total, change,
       staffName: currentUser?.name || "?",
     };
@@ -206,6 +257,42 @@ export default function KasirApp() {
     setProducts((prev) => prev.filter((x) => x.id !== id));
     setCart((prev) => prev.filter((c) => c.productId !== id));
     if (p) logActivity("hapus_produk", p.name);
+  }
+
+  async function handleLogoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageFile(file, 300);
+      setSettings((s) => ({ ...s, logoUrl: dataUrl }));
+    } catch (err) {}
+    e.target.value = "";
+  }
+
+  async function handleProductImageUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageFile(file, 500);
+      setProductModal((p) => ({ ...p, image: dataUrl }));
+    } catch (err) {}
+    e.target.value = "";
+  }
+
+  function saveDiscount(d) {
+    const isNew = !d.id;
+    if (isNew) setDiscounts((prev) => [...prev, { ...d, id: uid() }]);
+    else setDiscounts((prev) => prev.map((x) => (x.id === d.id ? d : x)));
+    logActivity(isNew ? "tambah_promo" : "edit_promo", `${d.name} · ${(d.productIds || []).length} produk`);
+    setDiscountModal(null);
+  }
+  function deleteDiscount(id) {
+    const d = discounts.find((x) => x.id === id);
+    setDiscounts((prev) => prev.filter((x) => x.id !== id));
+    if (d) logActivity("hapus_promo", d.name);
+  }
+  function toggleDiscountActive(id) {
+    setDiscounts((prev) => prev.map((x) => (x.id === id ? { ...x, active: x.active === false } : x)));
   }
 
   function saveStaffMember(s) {
@@ -315,8 +402,12 @@ export default function KasirApp() {
       <header className="border-b border-[#F0D3DE] bg-[#FDF5F8] sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-8 h-8 rounded-md bg-[#D6336C] flex items-center justify-center text-white shrink-0">
-              <Coffee size={18} />
+            <div className="w-8 h-8 rounded-md bg-[#D6336C] flex items-center justify-center text-white shrink-0 overflow-hidden">
+              {settings.logoUrl ? (
+                <img src={settings.logoUrl} alt="Logo" className="w-full h-full object-cover" />
+              ) : (
+                <Coffee size={18} />
+              )}
             </div>
             <div className="min-w-0">
               <input value={settings.shopName} disabled={!isAdmin}
@@ -329,6 +420,7 @@ export default function KasirApp() {
             {[
               { id: "kasir", label: "Kasir", icon: Receipt, show: true },
               { id: "produk", label: "Produk", icon: Package, show: isAdmin },
+              { id: "promo", label: "Promo", icon: Tag, show: isAdmin },
               { id: "riwayat", label: "Riwayat", icon: History, show: true },
               { id: "staff", label: "Staff", icon: Shield, show: isAdmin },
               { id: "aktivitas", label: "Aktivitas", icon: ClipboardList, show: isAdmin },
@@ -368,14 +460,31 @@ export default function KasirApp() {
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {visibleProducts.map((p) => (
-                  <button key={p.id} onClick={() => addToCart(p.id)}
-                    className="bg-white border border-[#F0D3DE] rounded-xl p-3 text-left hover:border-[#D6336C] hover:shadow-sm transition-all active:scale-[0.98]">
-                    <div className="text-2xl mb-1">{p.icon || "☕"}</div>
-                    <div className="text-sm font-medium leading-tight line-clamp-2">{p.name}</div>
-                    <div className="text-xs font-mono text-[#D6336C] mt-1">{rupiah(p.price)}</div>
-                  </button>
-                ))}
+                {visibleProducts.map((p) => {
+                  const { cut, label } = bestDiscountFor(p.id, p.price);
+                  return (
+                    <button key={p.id} onClick={() => addToCart(p.id)}
+                      className="relative bg-white border border-[#F0D3DE] rounded-xl p-3 text-left hover:border-[#D6336C] hover:shadow-sm transition-all active:scale-[0.98]">
+                      {cut > 0 && (
+                        <span className="absolute top-2 right-2 bg-[#D6336C] text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                          <Tag size={9} /> Promo
+                        </span>
+                      )}
+                      <div className="w-full aspect-square rounded-lg bg-[#FBEAF1] mb-2 overflow-hidden flex items-center justify-center text-2xl">
+                        {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" /> : (p.icon || "☕")}
+                      </div>
+                      <div className="text-sm font-medium leading-tight line-clamp-2">{p.name}</div>
+                      {cut > 0 ? (
+                        <div className="mt-1">
+                          <div className="text-[10px] font-mono text-[#9C7885] line-through">{rupiah(p.price)}</div>
+                          <div className="text-xs font-mono text-[#D6336C] font-semibold">{rupiah(p.price - cut)}</div>
+                        </div>
+                      ) : (
+                        <div className="text-xs font-mono text-[#D6336C] mt-1">{rupiah(p.price)}</div>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -395,10 +504,20 @@ export default function KasirApp() {
                   <div className="divide-y divide-[#FBEAF1]">
                     {cartLines.map((l) => (
                       <div key={l.id} className="py-2 flex items-center gap-2">
-                        <div className="text-lg">{l.icon || "☕"}</div>
+                        <div className="w-8 h-8 rounded-md bg-[#FBEAF1] shrink-0 overflow-hidden flex items-center justify-center text-lg">
+                          {l.image ? <img src={l.image} alt={l.name} className="w-full h-full object-cover" /> : (l.icon || "☕")}
+                        </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-xs font-medium truncate">{l.name}</div>
-                          <div className="text-[11px] font-mono text-[#9C7885]">{rupiah(l.price)} x {l.qty}</div>
+                          {l.discountCut > 0 ? (
+                            <div className="text-[11px] font-mono">
+                              <span className="text-[#9C7885] line-through mr-1">{rupiah(l.price)}</span>
+                              <span className="text-[#D6336C]">{rupiah(l.finalPrice)}</span>
+                              <span className="text-[#9C7885]"> x {l.qty}</span>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] font-mono text-[#9C7885]">{rupiah(l.price)} x {l.qty}</div>
+                          )}
                         </div>
                         <div className="flex items-center gap-1">
                           <button onClick={() => changeQty(l.id, -1)} className="w-6 h-6 rounded-md bg-[#FBEAF1] flex items-center justify-center"><Minus size={12} /></button>
@@ -413,6 +532,9 @@ export default function KasirApp() {
               </div>
               <div className="px-4 py-3 border-t border-dashed border-[#F0D3DE] font-mono text-xs space-y-1">
                 <div className="flex justify-between text-[#9C7885]"><span>Subtotal</span><span>{rupiah(subtotal)}</span></div>
+                {promoDiscountTotal > 0 && (
+                  <div className="flex justify-between text-[#D6336C]"><span>Diskon promo</span><span>-{rupiah(promoDiscountTotal)}</span></div>
+                )}
                 {Number(settings.taxPercent) > 0 && (
                   <div className="flex justify-between text-[#9C7885]"><span>Pajak ({settings.taxPercent}%)</span><span>{rupiah(tax)}</span></div>
                 )}
@@ -436,16 +558,44 @@ export default function KasirApp() {
               <h2 className="font-semibold">Produk</h2>
               <p className="text-xs text-[#9C7885]">Kelola menu, harga, dan kategori</p>
             </div>
-            <button onClick={() => setProductModal({ name: "", price: "", category: "", icon: "☕" })}
+            <button onClick={() => setProductModal({ name: "", price: "", category: "", icon: "☕", image: "" })}
               className="flex items-center gap-1.5 bg-[#D6336C] text-white text-sm font-medium px-3 py-2 rounded-lg">
               <Plus size={15} /> Tambah Produk
             </button>
           </div>
-          <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
-            <label className="text-xs text-[#9C7885] block mb-1">Pajak per transaksi (%)</label>
-            <input type="number" min="0" value={settings.taxPercent}
-              onChange={(e) => setSettings((s) => ({ ...s, taxPercent: e.target.value }))}
-              className="w-24 border border-[#F0D3DE] rounded-md px-2 py-1 text-sm outline-none focus:border-[#D6336C]" />
+          <div className="bg-white border border-[#F0D3DE] rounded-xl p-3 flex flex-col gap-4">
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Nama brand</label>
+              <input value={settings.shopName} onChange={(e) => setSettings((s) => ({ ...s, shopName: e.target.value }))}
+                placeholder="Nama coffee shop kamu"
+                className="w-full border border-[#F0D3DE] rounded-md px-2 py-1.5 text-sm outline-none focus:border-[#D6336C]" />
+            </div>
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Logo brand</label>
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-lg bg-[#FBEAF1] flex items-center justify-center overflow-hidden shrink-0">
+                  {settings.logoUrl ? (
+                    <img src={settings.logoUrl} alt="Logo" className="w-full h-full object-cover" />
+                  ) : (
+                    <Coffee size={20} className="text-[#9C7885]" />
+                  )}
+                </div>
+                <label className="flex items-center gap-1.5 text-xs font-medium bg-[#FBEAF1] px-3 py-2 rounded-lg cursor-pointer hover:bg-[#F0D3DE]">
+                  <ImagePlus size={14} /> {settings.logoUrl ? "Ganti Logo" : "Unggah Logo"}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                </label>
+                {settings.logoUrl && (
+                  <button onClick={() => setSettings((s) => ({ ...s, logoUrl: "" }))}
+                    className="flex items-center gap-1 text-xs text-[#C23B57]"><ImageOff size={14} /> Hapus</button>
+                )}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Pajak per transaksi (%)</label>
+              <input type="number" min="0" value={settings.taxPercent}
+                onChange={(e) => setSettings((s) => ({ ...s, taxPercent: e.target.value }))}
+                className="w-24 border border-[#F0D3DE] rounded-md px-2 py-1 text-sm outline-none focus:border-[#D6336C]" />
+            </div>
           </div>
           {products.length === 0 ? (
             <p className="text-sm text-[#9C7885] text-center py-10">Belum ada produk. Tambahkan yang pertama.</p>
@@ -453,7 +603,9 @@ export default function KasirApp() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {products.map((p) => (
                 <div key={p.id} className="bg-white border border-[#F0D3DE] rounded-xl p-3 flex items-center gap-3">
-                  <div className="text-2xl">{p.icon || "☕"}</div>
+                  <div className="w-11 h-11 rounded-lg bg-[#FBEAF1] shrink-0 overflow-hidden flex items-center justify-center text-2xl">
+                    {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" /> : (p.icon || "☕")}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{p.name}</div>
                     <div className="text-xs text-[#9C7885]">{p.category || "Lainnya"} · <span className="font-mono">{rupiah(p.price)}</span></div>
@@ -520,6 +672,41 @@ export default function KasirApp() {
         </div>
       )}
 
+      {tab === "promo" && isAdmin && (
+        <div className="max-w-3xl w-full mx-auto p-4 flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div><h2 className="font-semibold">Promo & Diskon</h2><p className="text-xs text-[#9C7885]">Atur diskon khusus untuk produk tertentu</p></div>
+            <button onClick={() => setDiscountModal({ name: "", type: "percent", value: "", productIds: [], active: true })}
+              className="flex items-center gap-1.5 bg-[#D6336C] text-white text-sm font-medium px-3 py-2 rounded-lg">
+              <Plus size={15} /> Tambah Promo
+            </button>
+          </div>
+          {discounts.length === 0 ? (
+            <p className="text-sm text-[#9C7885] text-center py-10">Belum ada promo. Buat diskon untuk produk tertentu, misalnya event atau jam happy hour.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {discounts.map((d) => (
+                <div key={d.id} className="bg-white border border-[#F0D3DE] rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-[#FBEAF1] flex items-center justify-center shrink-0"><Tag size={16} className="text-[#9C7885]" /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{d.name}</div>
+                    <div className="text-xs text-[#9C7885]">
+                      {d.type === "percent" ? `${d.value}%` : rupiah(d.value)} · {(d.productIds || []).length} produk · {d.active === false ? "Nonaktif" : "Aktif"}
+                    </div>
+                  </div>
+                  <button onClick={() => toggleDiscountActive(d.id)}
+                    className={`px-2.5 py-1.5 rounded-md text-[10px] font-semibold shrink-0 ${d.active === false ? "bg-[#FBEAF1] text-[#9C7885]" : "bg-[#E3F1E9] text-[#4E8B6B]"}`}>
+                    {d.active === false ? "Nonaktif" : "Aktif"}
+                  </button>
+                  <button onClick={() => setDiscountModal({ ...d })} className="w-8 h-8 rounded-md bg-[#FBEAF1] flex items-center justify-center shrink-0"><Pencil size={14} /></button>
+                  <button onClick={() => deleteDiscount(d.id)} className="w-8 h-8 rounded-md bg-[#FCE8E9] text-[#C23B57] flex items-center justify-center shrink-0"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {tab === "aktivitas" && isAdmin && (
         <div className="max-w-3xl w-full mx-auto p-4 flex flex-col gap-4">
           <div><h2 className="font-semibold">Aktivitas</h2><p className="text-xs text-[#9C7885]">Riwayat aksi semua akun kasir</p></div>
@@ -545,8 +732,14 @@ export default function KasirApp() {
         <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-30 p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm p-5">
             <div className="flex items-center justify-between mb-3"><h3 className="font-semibold">Pembayaran</h3><button onClick={() => setCheckoutOpen(false)}><X size={18} /></button></div>
-            <div className="font-mono text-sm flex justify-between mb-3 pb-3 border-b border-dashed border-[#F0D3DE]"><span className="text-[#9C7885]">Total tagihan</span><span className="font-bold">{rupiah(total)}</span></div>
-            <label className="text-xs text-[#9C7885] block mb-1">Diskon (Rp)</label>
+            <div className="font-mono text-xs space-y-1 mb-3 pb-3 border-b border-dashed border-[#F0D3DE]">
+              <div className="flex justify-between text-[#9C7885]"><span>Subtotal</span><span>{rupiah(subtotal)}</span></div>
+              {promoDiscountTotal > 0 && (
+                <div className="flex justify-between text-[#D6336C]"><span>Diskon promo</span><span>-{rupiah(promoDiscountTotal)}</span></div>
+              )}
+              <div className="flex justify-between text-sm pt-1"><span className="text-[#9C7885]">Total tagihan</span><span className="font-bold">{rupiah(total)}</span></div>
+            </div>
+            <label className="text-xs text-[#9C7885] block mb-1">Diskon tambahan (Rp)</label>
             <input type="number" min="0" value={discountInput} onChange={(e) => setDiscountInput(e.target.value)} placeholder="0"
               className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-3 outline-none focus:border-[#D6336C]" />
             <label className="text-xs text-[#9C7885] block mb-1">Metode pembayaran</label>
@@ -580,15 +773,24 @@ export default function KasirApp() {
           <div className="bg-white rounded-xl w-full max-w-xs p-5 font-mono text-xs relative">
             <button onClick={() => setLastReceipt(null)} className="absolute right-3 top-3"><X size={16} /></button>
             <div className="text-center mb-2">
+              {settings.logoUrl && (
+                <img src={settings.logoUrl} alt="Logo" className="w-10 h-10 object-cover rounded-md mx-auto mb-1" />
+              )}
               <p className="font-bold text-sm">{settings.shopName}</p>
               <p className="text-[#9C7885]">{new Date(lastReceipt.timestamp).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}</p>
             </div>
             <div className="border-t border-dashed border-[#F0D3DE] my-2" />
             {lastReceipt.items.map((it, i) => (
-              <div key={i} className="flex justify-between py-0.5"><span>{it.name} x{it.qty}</span><span>{rupiah(it.price * it.qty)}</span></div>
+              <div key={i} className="py-0.5">
+                <div className="flex justify-between"><span>{it.name} x{it.qty}</span><span>{rupiah(it.price * it.qty)}</span></div>
+                {it.discountLabel && (
+                  <div className="flex justify-between text-[10px] text-[#D6336C]"><span>↳ {it.discountLabel}</span><span>coret {rupiah(it.originalPrice)}</span></div>
+                )}
+              </div>
             ))}
             <div className="border-t border-dashed border-[#F0D3DE] my-2" />
             <div className="flex justify-between"><span>Subtotal</span><span>{rupiah(lastReceipt.subtotal)}</span></div>
+            {lastReceipt.promoDiscount > 0 && <div className="flex justify-between"><span>Diskon promo</span><span>-{rupiah(lastReceipt.promoDiscount)}</span></div>}
             {lastReceipt.discount > 0 && <div className="flex justify-between"><span>Diskon</span><span>-{rupiah(lastReceipt.discount)}</span></div>}
             {lastReceipt.tax > 0 && <div className="flex justify-between"><span>Pajak</span><span>{rupiah(lastReceipt.tax)}</span></div>}
             <div className="flex justify-between font-bold text-sm mt-1"><span>Total</span><span>{rupiah(lastReceipt.total)}</span></div>
@@ -605,7 +807,23 @@ export default function KasirApp() {
         <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-30 p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm p-5">
             <div className="flex items-center justify-between mb-3"><h3 className="font-semibold">{productModal.id ? "Edit Produk" : "Tambah Produk"}</h3><button onClick={() => setProductModal(null)}><X size={18} /></button></div>
-            <label className="text-xs text-[#9C7885] block mb-1">Ikon</label>
+            <label className="text-xs text-[#9C7885] block mb-1">Gambar produk</label>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-14 h-14 rounded-lg bg-[#FBEAF1] flex items-center justify-center overflow-hidden shrink-0 text-2xl">
+                {productModal.image ? (
+                  <img src={productModal.image} alt="Preview" className="w-full h-full object-cover" />
+                ) : (productModal.icon || "☕")}
+              </div>
+              <label className="flex items-center gap-1.5 text-xs font-medium bg-[#FBEAF1] px-3 py-2 rounded-lg cursor-pointer hover:bg-[#F0D3DE]">
+                <ImagePlus size={14} /> {productModal.image ? "Ganti Gambar" : "Unggah Gambar"}
+                <input type="file" accept="image/*" className="hidden" onChange={handleProductImageUpload} />
+              </label>
+              {productModal.image && (
+                <button onClick={() => setProductModal((p) => ({ ...p, image: "" }))}
+                  className="flex items-center gap-1 text-xs text-[#C23B57]"><ImageOff size={14} /> Hapus</button>
+              )}
+            </div>
+            <label className="text-xs text-[#9C7885] block mb-1">Ikon {productModal.image && <span className="text-[#9C7885]">(dipakai jika gambar dihapus)</span>}</label>
             <div className="flex gap-1.5 flex-wrap mb-3">
               {EMOJIS.map((em) => (
                 <button key={em} onClick={() => setProductModal((p) => ({ ...p, icon: em }))}
@@ -660,6 +878,56 @@ export default function KasirApp() {
           </div>
         </div>
       )}
+
+      {discountModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-30 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm p-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3"><h3 className="font-semibold">{discountModal.id ? "Edit Promo" : "Tambah Promo"}</h3><button onClick={() => setDiscountModal(null)}><X size={18} /></button></div>
+            <label className="text-xs text-[#9C7885] block mb-1">Nama promo</label>
+            <input value={discountModal.name} onChange={(e) => setDiscountModal((d) => ({ ...d, name: e.target.value }))} placeholder="mis. Promo Akhir Pekan"
+              className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-3 outline-none focus:border-[#D6336C]" />
+            <label className="text-xs text-[#9C7885] block mb-1">Jenis diskon</label>
+            <div className="flex gap-2 mb-3">
+              {[{ k: "percent", l: "Persen (%)" }, { k: "nominal", l: "Nominal (Rp)" }].map((o) => (
+                <button key={o.k} onClick={() => setDiscountModal((d) => ({ ...d, type: o.k }))}
+                  className={`flex-1 py-2 rounded-lg text-xs font-medium border ${discountModal.type === o.k ? "bg-[#3D1F2B] text-white border-[#3D1F2B]" : "border-[#F0D3DE] text-[#9C7885]"}`}>{o.l}</button>
+              ))}
+            </div>
+            <label className="text-xs text-[#9C7885] block mb-1">Nilai diskon {discountModal.type === "percent" ? "(%)" : "(Rp)"}</label>
+            <input type="number" min="0" value={discountModal.value} onChange={(e) => setDiscountModal((d) => ({ ...d, value: e.target.value }))} placeholder="0"
+              className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-3 outline-none focus:border-[#D6336C]" />
+            <label className="text-xs text-[#9C7885] block mb-1">Berlaku untuk produk</label>
+            <div className="border border-[#F0D3DE] rounded-lg p-2 mb-3 max-h-40 overflow-y-auto flex flex-col gap-0.5">
+              {products.length === 0 ? (
+                <p className="text-xs text-[#9C7885] p-2">Belum ada produk. Tambahkan produk dulu di tab Produk.</p>
+              ) : products.map((p) => (
+                <label key={p.id} className="flex items-center gap-2 px-1.5 py-1.5 rounded-md hover:bg-[#FBEAF1] text-sm cursor-pointer">
+                  <input type="checkbox" checked={(discountModal.productIds || []).includes(p.id)}
+                    onChange={(e) => setDiscountModal((d) => {
+                      const set = new Set(d.productIds || []);
+                      if (e.target.checked) set.add(p.id); else set.delete(p.id);
+                      return { ...d, productIds: Array.from(set) };
+                    })} />
+                  <span className="w-5 h-5 rounded overflow-hidden bg-[#FBEAF1] flex items-center justify-center text-xs shrink-0">
+                    {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" /> : (p.icon || "☕")}
+                  </span>
+                  <span className="flex-1 truncate">{p.name}</span>
+                </label>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer">
+              <input type="checkbox" checked={discountModal.active !== false} onChange={(e) => setDiscountModal((d) => ({ ...d, active: e.target.checked }))} />
+              Aktifkan promo ini sekarang
+            </label>
+            <button
+              onClick={() => saveDiscount({ ...discountModal, name: discountModal.name.trim() || "Promo", value: Number(discountModal.value) || 0 })}
+              disabled={!discountModal.name.trim() || !(discountModal.productIds || []).length || !(Number(discountModal.value) > 0)}
+              className="w-full bg-[#3D1F2B] disabled:bg-[#EBCCDA] text-white font-semibold py-3 rounded-lg text-sm">
+              Simpan Promo
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -675,6 +943,9 @@ function actionLabel(action) {
     tambah_staff: "menambah staff",
     edit_staff: "mengubah staff",
     hapus_staff: "menghapus staff",
+    tambah_promo: "menambah promo",
+    edit_promo: "mengubah promo",
+    hapus_promo: "menghapus promo",
   };
   return map[action] || action;
 }
