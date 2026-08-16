@@ -4,6 +4,7 @@ import {
   Pencil, Check, Lock, LogOut, UserPlus, Shield, User, Delete, ClipboardList,
   Tag, ImagePlus, ImageOff,
 } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const rupiah = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
@@ -37,27 +38,51 @@ function resizeImageFile(file, maxDim = 500) {
 }
 
 
-// Polyfill window.storage using localStorage so this works as a standalone deployed site
+// window.storage backed by Supabase (cloud), so data is shared across devices
+// and survives browser cache clears. Falls back to localStorage if Supabase
+// is unreachable, so the kasir can keep working during a connection hiccup.
 if (typeof window !== "undefined" && !window.storage) {
-  const PREFIX = "kasir_";
+  const LOCAL_PREFIX = "kasir_";
+  const TABLE = "kasir_kv";
+
   window.storage = {
     async get(key) {
-      const raw = localStorage.getItem(PREFIX + key);
-      return raw !== null ? { key, value: raw, shared: false } : null;
+      try {
+        const { data, error } = await supabase.from(TABLE).select("value").eq("key", key).maybeSingle();
+        if (error) throw error;
+        if (!data) return null;
+        const value = JSON.stringify(data.value);
+        localStorage.setItem(LOCAL_PREFIX + key, value); // keep a local mirror as backup
+        return { key, value, shared: false };
+      } catch (e) {
+        const raw = localStorage.getItem(LOCAL_PREFIX + key);
+        return raw !== null ? { key, value: raw, shared: false } : null;
+      }
     },
     async set(key, value) {
-      localStorage.setItem(PREFIX + key, value);
+      localStorage.setItem(LOCAL_PREFIX + key, value); // always mirror locally first
+      try {
+        const { error } = await supabase.from(TABLE).upsert({ key, value: JSON.parse(value), updated_at: new Date().toISOString() });
+        if (error) throw error;
+      } catch (e) {}
       return { key, value, shared: false };
     },
     async delete(key) {
-      localStorage.removeItem(PREFIX + key);
+      localStorage.removeItem(LOCAL_PREFIX + key);
+      try { await supabase.from(TABLE).delete().eq("key", key); } catch (e) {}
       return { key, deleted: true, shared: false };
     },
     async list(prefix = "") {
-      const keys = Object.keys(localStorage)
-        .filter((k) => k.startsWith(PREFIX + prefix))
-        .map((k) => k.slice(PREFIX.length));
-      return { keys, prefix, shared: false };
+      try {
+        const { data, error } = await supabase.from(TABLE).select("key").like("key", `${prefix}%`);
+        if (error) throw error;
+        return { keys: (data || []).map((d) => d.key), prefix, shared: false };
+      } catch (e) {
+        const keys = Object.keys(localStorage)
+          .filter((k) => k.startsWith(LOCAL_PREFIX + prefix))
+          .map((k) => k.slice(LOCAL_PREFIX.length));
+        return { keys, prefix, shared: false };
+      }
     },
   };
 }
