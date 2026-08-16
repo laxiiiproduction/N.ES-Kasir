@@ -238,14 +238,25 @@ export default function KasirApp() {
   const change = payMethod === "Tunai" ? Math.max(cash - total, 0) : 0;
 
   function addToCart(productId) {
+    const prod = products.find((p) => p.id === productId);
+    if (!prod) return;
     setCart((prev) => {
       const found = prev.find((c) => c.productId === productId);
+      const currentQty = found ? found.qty : 0;
+      if (prod.trackStock && currentQty >= Number(prod.stock || 0)) return prev; // stok nggak cukup
       if (found) return prev.map((c) => (c.productId === productId ? { ...c, qty: c.qty + 1 } : c));
       return [...prev, { productId, qty: 1 }];
     });
   }
   function changeQty(productId, delta) {
-    setCart((prev) => prev.map((c) => (c.productId === productId ? { ...c, qty: c.qty + delta } : c)).filter((c) => c.qty > 0));
+    setCart((prev) => prev.map((c) => {
+      if (c.productId !== productId) return c;
+      if (delta > 0) {
+        const prod = products.find((p) => p.id === productId);
+        if (prod?.trackStock && c.qty >= Number(prod.stock || 0)) return c; // stok nggak cukup
+      }
+      return { ...c, qty: c.qty + delta };
+    }).filter((c) => c.qty > 0));
   }
   function removeFromCart(productId) { setCart((prev) => prev.filter((c) => c.productId !== productId)); }
   function clearCart() { setCart([]); setDiscountInput(""); setCashInput(""); setPayMethod("Tunai"); }
@@ -264,6 +275,12 @@ export default function KasirApp() {
       staffName: currentUser?.name || "?",
     };
     setOrders((prev) => [record, ...prev]);
+    setProducts((prev) => prev.map((p) => {
+      if (!p.trackStock) return p;
+      const line = cartLines.find((l) => l.id === p.id);
+      if (!line) return p;
+      return { ...p, stock: Math.max(Number(p.stock || 0) - line.qty, 0) };
+    }));
     logActivity("transaksi", `${rupiah(total)} · ${cartLines.length} item`);
     setLastReceipt(record);
     setCheckoutOpen(false);
@@ -276,6 +293,9 @@ export default function KasirApp() {
     else setProducts((prev) => prev.map((x) => (x.id === p.id ? p : x)));
     logActivity(isNew ? "tambah_produk" : "edit_produk", `${p.name} · ${rupiah(p.price)}`);
     setProductModal(null);
+  }
+  function adjustStock(id, delta) {
+    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, stock: Math.max(Number(p.stock || 0) + delta, 0) } : p)));
   }
   function deleteProduct(id) {
     const p = products.find((x) => x.id === id);
@@ -487,10 +507,12 @@ export default function KasirApp() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {visibleProducts.map((p) => {
                   const { cut, label } = bestDiscountFor(p.id, p.price);
+                  const outOfStock = p.trackStock && Number(p.stock || 0) <= 0;
+                  const lowStock = p.trackStock && !outOfStock && Number(p.stock || 0) <= 5;
                   return (
-                    <button key={p.id} onClick={() => addToCart(p.id)}
-                      className="relative bg-white border border-[#F0D3DE] rounded-xl p-3 text-left hover:border-[#D6336C] hover:shadow-sm transition-all active:scale-[0.98]">
-                      {cut > 0 && (
+                    <button key={p.id} onClick={() => addToCart(p.id)} disabled={outOfStock}
+                      className={`relative bg-white border border-[#F0D3DE] rounded-xl p-3 text-left transition-all ${outOfStock ? "opacity-50 cursor-not-allowed" : "hover:border-[#D6336C] hover:shadow-sm active:scale-[0.98]"}`}>
+                      {cut > 0 && !outOfStock && (
                         <span className="absolute top-2 right-2 bg-[#D6336C] text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
                           <Tag size={9} /> Promo
                         </span>
@@ -506,6 +528,11 @@ export default function KasirApp() {
                         </div>
                       ) : (
                         <div className="text-xs font-mono text-[#D6336C] mt-1">{rupiah(p.price)}</div>
+                      )}
+                      {p.trackStock && (
+                        <div className={`text-[10px] mt-0.5 font-medium ${outOfStock ? "text-[#C23B57]" : lowStock ? "text-[#C97A3D]" : "text-[#9C7885]"}`}>
+                          {outOfStock ? "Stok habis" : `Stok: ${p.stock}`}
+                        </div>
                       )}
                     </button>
                   );
@@ -583,7 +610,7 @@ export default function KasirApp() {
               <h2 className="font-semibold">Produk</h2>
               <p className="text-xs text-[#9C7885]">Kelola menu, harga, dan kategori</p>
             </div>
-            <button onClick={() => setProductModal({ name: "", price: "", category: "", icon: "☕", image: "" })}
+            <button onClick={() => setProductModal({ name: "", price: "", category: "", icon: "☕", image: "", trackStock: false, stock: "" })}
               className="flex items-center gap-1.5 bg-[#D6336C] text-white text-sm font-medium px-3 py-2 rounded-lg">
               <Plus size={15} /> Tambah Produk
             </button>
@@ -633,8 +660,20 @@ export default function KasirApp() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{p.name}</div>
-                    <div className="text-xs text-[#9C7885]">{p.category || "Lainnya"} · <span className="font-mono">{rupiah(p.price)}</span></div>
+                    <div className="text-xs text-[#9C7885]">
+                      {p.category || "Lainnya"} · <span className="font-mono">{rupiah(p.price)}</span>
+                      {p.trackStock && (
+                        <> · <span className={`font-medium ${Number(p.stock || 0) <= 0 ? "text-[#C23B57]" : Number(p.stock || 0) <= 5 ? "text-[#C97A3D]" : "text-[#4E8B6B]"}`}>Stok {p.stock || 0}</span></>
+                      )}
+                    </div>
                   </div>
+                  {p.trackStock && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => adjustStock(p.id, -1)} className="w-6 h-6 rounded-md bg-[#FBEAF1] flex items-center justify-center"><Minus size={11} /></button>
+                      <span className="text-xs font-mono w-6 text-center">{p.stock || 0}</span>
+                      <button onClick={() => adjustStock(p.id, 1)} className="w-6 h-6 rounded-md bg-[#FBEAF1] flex items-center justify-center"><Plus size={11} /></button>
+                    </div>
+                  )}
                   <button onClick={() => setProductModal(p)} className="w-8 h-8 rounded-md bg-[#FBEAF1] flex items-center justify-center"><Pencil size={14} /></button>
                   <button onClick={() => deleteProduct(p.id)} className="w-8 h-8 rounded-md bg-[#FCE8E9] text-[#C23B57] flex items-center justify-center"><Trash2 size={14} /></button>
                 </div>
@@ -864,7 +903,18 @@ export default function KasirApp() {
             <label className="text-xs text-[#9C7885] block mb-1">Kategori</label>
             <input value={productModal.category} onChange={(e) => setProductModal((p) => ({ ...p, category: e.target.value }))} placeholder="mis. Minuman, Makanan"
               className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-4 outline-none focus:border-[#D6336C]" />
-            <button onClick={() => saveProduct({ ...productModal, name: productModal.name.trim() || "Produk", price: Number(productModal.price) || 0 })}
+            <label className="flex items-center gap-2 mb-3 text-sm cursor-pointer">
+              <input type="checkbox" checked={!!productModal.trackStock} onChange={(e) => setProductModal((p) => ({ ...p, trackStock: e.target.checked }))} />
+              Lacak stok produk ini
+            </label>
+            {productModal.trackStock && (
+              <>
+                <label className="text-xs text-[#9C7885] block mb-1">Jumlah stok saat ini</label>
+                <input type="number" min="0" value={productModal.stock ?? ""} onChange={(e) => setProductModal((p) => ({ ...p, stock: e.target.value }))} placeholder="0"
+                  className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-4 outline-none focus:border-[#D6336C]" />
+              </>
+            )}
+            <button onClick={() => saveProduct({ ...productModal, name: productModal.name.trim() || "Produk", price: Number(productModal.price) || 0, stock: productModal.trackStock ? Number(productModal.stock) || 0 : undefined })}
               disabled={!productModal.name.trim()} className="w-full bg-[#3D1F2B] disabled:bg-[#EBCCDA] text-white font-semibold py-3 rounded-lg text-sm">
               Simpan Produk
             </button>
