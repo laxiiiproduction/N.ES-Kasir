@@ -2,13 +2,49 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Plus, Minus, Trash2, X, Coffee, Receipt, Package, History,
   Pencil, Check, Lock, LogOut, UserPlus, Shield, User, Delete, ClipboardList,
-  Tag, ImagePlus, ImageOff,
+  Tag, ImagePlus, ImageOff, BarChart3,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const rupiah = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const EMOJIS = ["☕", "🥐", "🍰", "🧋", "🍫", "🥤", "🍩", "🥯", "🧁", "🍪"];
+
+const dateKeyOf = (ts) => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const todayKey = () => dateKeyOf(Date.now());
+const monthKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+function getWeekStart(dateStr) {
+  const date = new Date(dateStr + "T00:00:00");
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + diff);
+  return date;
+}
+
+// Simple flex-based bar chart, no chart library needed
+function SimpleBarChart({ data }) {
+  const max = Math.max(1, ...data.map((d) => d.value));
+  return (
+    <div className="w-full h-40 flex items-end gap-1">
+      {data.map((d, i) => {
+        const h = d.value > 0 ? Math.max((d.value / max) * 100, 4) : 1.5;
+        return (
+          <div key={i} className="flex-1 flex flex-col items-center justify-end h-full min-w-0">
+            <div
+              className="w-full rounded-t-sm bg-[#D6336C] transition-all"
+              style={{ height: `${h}%`, opacity: d.value > 0 ? 1 : 0.15 }}
+              title={`${d.label || ""}: ${rupiah(d.value)}`}
+            />
+            <span className="text-[9px] text-[#9C7885] mt-1 truncate w-full text-center">{d.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // Resize + convert an uploaded image file to a compact base64 data URL
 function resizeImageFile(file, maxDim = 500) {
@@ -116,6 +152,9 @@ export default function KasirApp() {
   const [productModal, setProductModal] = useState(null);
   const [staffModal, setStaffModal] = useState(null); // {id?, name, pin, role}
   const [discountModal, setDiscountModal] = useState(null); // {id?, name, type, value, productIds, active}
+  const [reportPeriod, setReportPeriod] = useState("harian"); // harian | mingguan | bulanan
+  const [reportDate, setReportDate] = useState(todayKey());
+  const [reportMonth, setReportMonth] = useState(monthKeyOf(new Date()));
 
   useEffect(() => {
     (async () => {
@@ -358,6 +397,68 @@ export default function KasirApp() {
   const todayOrders = orders.filter((o) => new Date(o.timestamp).toDateString() === new Date().toDateString());
   const todayTotal = todayOrders.reduce((s, o) => s + o.total, 0);
 
+  // ---------- Laporan penjualan ----------
+  const reportData = useMemo(() => {
+    if (reportPeriod === "harian") {
+      const rangeOrders = orders.filter((o) => dateKeyOf(o.timestamp) === reportDate);
+      const endDate = new Date(reportDate + "T00:00:00");
+      const chart = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(endDate);
+        d.setDate(d.getDate() - i);
+        const key = dateKeyOf(d.getTime());
+        const value = orders.filter((o) => dateKeyOf(o.timestamp) === key).reduce((s, o) => s + o.total, 0);
+        chart.push({ label: d.toLocaleDateString("id-ID", { weekday: "short" }), value });
+      }
+      return { rangeOrders, chart, rangeLabel: endDate.toLocaleDateString("id-ID", { dateStyle: "full" }) };
+    }
+    if (reportPeriod === "mingguan") {
+      const weekStart = getWeekStart(reportDate);
+      const chart = [];
+      let rangeOrders = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(weekStart);
+        d.setDate(d.getDate() + i);
+        const key = dateKeyOf(d.getTime());
+        const dayOrders = orders.filter((o) => dateKeyOf(o.timestamp) === key);
+        rangeOrders = rangeOrders.concat(dayOrders);
+        chart.push({ label: d.toLocaleDateString("id-ID", { weekday: "short" }), value: dayOrders.reduce((s, o) => s + o.total, 0) });
+      }
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      return { rangeOrders, chart, rangeLabel: `${weekStart.toLocaleDateString("id-ID", { dateStyle: "medium" })} – ${weekEnd.toLocaleDateString("id-ID", { dateStyle: "medium" })}` };
+    }
+    // bulanan
+    const [y, m] = reportMonth.split("-").map(Number);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const chart = [];
+    let rangeOrders = [];
+    for (let i = 1; i <= daysInMonth; i++) {
+      const d = new Date(y, m - 1, i);
+      const key = dateKeyOf(d.getTime());
+      const dayOrders = orders.filter((o) => dateKeyOf(o.timestamp) === key);
+      rangeOrders = rangeOrders.concat(dayOrders);
+      chart.push({ label: i === 1 || i === daysInMonth || i % 5 === 0 ? String(i) : "", value: dayOrders.reduce((s, o) => s + o.total, 0) });
+    }
+    return { rangeOrders, chart, rangeLabel: new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" }) };
+  }, [reportPeriod, reportDate, reportMonth, orders]);
+
+  const reportTotal = reportData.rangeOrders.reduce((s, o) => s + o.total, 0);
+  const reportCount = reportData.rangeOrders.length;
+  const reportAvg = reportCount ? reportTotal / reportCount : 0;
+
+  const topProducts = useMemo(() => {
+    const map = {};
+    reportData.rangeOrders.forEach((o) => {
+      o.items.forEach((it) => {
+        if (!map[it.name]) map[it.name] = { name: it.name, qty: 0, revenue: 0 };
+        map[it.name].qty += it.qty;
+        map[it.name].revenue += it.price * it.qty;
+      });
+    });
+    return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, 5);
+  }, [reportData]);
+
   if (!loaded) return <div className="min-h-screen bg-[#FDF5F8]" />;
 
   // ---------- Onboarding: create first admin ----------
@@ -466,6 +567,7 @@ export default function KasirApp() {
               { id: "kasir", label: "Kasir", icon: Receipt, show: true },
               { id: "produk", label: "Produk", icon: Package, show: isAdmin },
               { id: "promo", label: "Promo", icon: Tag, show: isAdmin },
+              { id: "laporan", label: "Laporan", icon: BarChart3, show: isAdmin },
               { id: "riwayat", label: "Riwayat", icon: History, show: true },
               { id: "staff", label: "Staff", icon: Shield, show: isAdmin },
               { id: "aktivitas", label: "Aktivitas", icon: ClipboardList, show: isAdmin },
@@ -680,6 +782,75 @@ export default function KasirApp() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {tab === "laporan" && isAdmin && (
+        <div className="max-w-4xl w-full mx-auto p-4 flex flex-col gap-4">
+          <div><h2 className="font-semibold">Laporan Penjualan</h2><p className="text-xs text-[#9C7885]">Rekap omzet dan performa produk</p></div>
+
+          <div className="flex gap-2">
+            {[{ k: "harian", l: "Harian" }, { k: "mingguan", l: "Mingguan" }, { k: "bulanan", l: "Bulanan" }].map((o) => (
+              <button key={o.k} onClick={() => setReportPeriod(o.k)}
+                className={`flex-1 py-2 rounded-lg text-xs font-medium border ${reportPeriod === o.k ? "bg-[#3D1F2B] text-white border-[#3D1F2B]" : "border-[#F0D3DE] text-[#9C7885]"}`}>{o.l}</button>
+            ))}
+          </div>
+
+          <div className="bg-white border border-[#F0D3DE] rounded-xl p-3 flex items-center gap-3 flex-wrap">
+            {reportPeriod !== "bulanan" ? (
+              <>
+                <label className="text-xs text-[#9C7885]">Pilih tanggal</label>
+                <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)}
+                  className="border border-[#F0D3DE] rounded-md px-2 py-1 text-sm outline-none focus:border-[#D6336C]" />
+              </>
+            ) : (
+              <>
+                <label className="text-xs text-[#9C7885]">Pilih bulan</label>
+                <input type="month" value={reportMonth} onChange={(e) => setReportMonth(e.target.value)}
+                  className="border border-[#F0D3DE] rounded-md px-2 py-1 text-sm outline-none focus:border-[#D6336C]" />
+              </>
+            )}
+            <span className="text-xs text-[#9C7885] sm:ml-auto">{reportData.rangeLabel}</span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
+              <p className="text-[10px] text-[#9C7885]">Total Omzet</p>
+              <p className="text-sm sm:text-base font-bold font-mono truncate">{rupiah(reportTotal)}</p>
+            </div>
+            <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
+              <p className="text-[10px] text-[#9C7885]">Transaksi</p>
+              <p className="text-sm sm:text-base font-bold font-mono">{reportCount}</p>
+            </div>
+            <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
+              <p className="text-[10px] text-[#9C7885]">Rata-rata</p>
+              <p className="text-sm sm:text-base font-bold font-mono truncate">{rupiah(reportAvg)}</p>
+            </div>
+          </div>
+
+          <div className="bg-white border border-[#F0D3DE] rounded-xl p-4">
+            <h3 className="text-xs font-semibold text-[#9C7885] uppercase tracking-wide mb-3">Grafik Omzet</h3>
+            <SimpleBarChart data={reportData.chart} />
+          </div>
+
+          <div className="bg-white border border-[#F0D3DE] rounded-xl p-4">
+            <h3 className="text-xs font-semibold text-[#9C7885] uppercase tracking-wide mb-3">Produk Terlaris</h3>
+            {topProducts.length === 0 ? (
+              <p className="text-sm text-[#9C7885] text-center py-6">Belum ada transaksi di periode ini.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {topProducts.map((p, i) => (
+                  <div key={p.name} className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded-full bg-[#FBEAF1] flex items-center justify-center text-[10px] font-bold text-[#D6336C] shrink-0">{i + 1}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{p.name}</div>
+                      <div className="text-[10px] text-[#9C7885]">{p.qty} terjual · {rupiah(p.revenue)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
