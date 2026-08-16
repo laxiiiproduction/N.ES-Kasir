@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Plus, Minus, Trash2, X, Coffee, Receipt, Package, History,
   Pencil, Check, Lock, LogOut, UserPlus, Shield, User, Delete, ClipboardList,
-  Tag, ImagePlus, ImageOff, BarChart3,
+  Tag, ImagePlus, ImageOff, BarChart3, Printer,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -127,7 +127,7 @@ export default function KasirApp() {
   const [tab, setTab] = useState("kasir");
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [settings, setSettings] = useState({ taxPercent: 0, shopName: "Coffee Shop Saya", logoUrl: "" });
+  const [settings, setSettings] = useState({ taxPercent: 0, shopName: "Coffee Shop Saya", logoUrl: "", address: "", phone: "", tagline: "" });
   const [staff, setStaff] = useState([]);
   const [discounts, setDiscounts] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
@@ -148,6 +148,9 @@ export default function KasirApp() {
   const [cashInput, setCashInput] = useState("");
   const [discountInput, setDiscountInput] = useState("");
   const [lastReceipt, setLastReceipt] = useState(null);
+  const [customerName, setCustomerName] = useState("");
+  const [orderType, setOrderType] = useState("Dine In");
+  const [tableNumber, setTableNumber] = useState("");
 
   const [productModal, setProductModal] = useState(null);
   const [staffModal, setStaffModal] = useState(null); // {id?, name, pin, role}
@@ -298,13 +301,19 @@ export default function KasirApp() {
     }).filter((c) => c.qty > 0));
   }
   function removeFromCart(productId) { setCart((prev) => prev.filter((c) => c.productId !== productId)); }
-  function clearCart() { setCart([]); setDiscountInput(""); setCashInput(""); setPayMethod("Tunai"); }
+  function clearCart() {
+    setCart([]); setDiscountInput(""); setCashInput(""); setPayMethod("Tunai");
+    setCustomerName(""); setOrderType("Dine In"); setTableNumber("");
+  }
   function openCheckout() { if (cartLines.length) setCheckoutOpen(true); }
 
   function confirmCheckout() {
     if (payMethod === "Tunai" && cash < total) return;
+    const ordersToday = orders.filter((o) => dateKeyOf(o.timestamp) === todayKey()).length;
+    const notaNumber = `FNB-${todayKey().replace(/-/g, "")}-${String(ordersToday + 1).padStart(3, "0")}`;
     const record = {
-      id: uid(), timestamp: Date.now(),
+      id: uid(), timestamp: Date.now(), notaNumber,
+      customerName: customerName.trim(), orderType, tableNumber: tableNumber.trim(),
       items: cartLines.map((l) => ({
         name: l.name, price: l.finalPrice, originalPrice: l.price, qty: l.qty,
         icon: l.icon, discountLabel: l.discountLabel,
@@ -545,6 +554,18 @@ export default function KasirApp() {
   // ---------- Main app ----------
   return (
     <div className="min-h-screen w-full bg-[#FDF5F8] text-[#3D1F2B] flex flex-col">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #print-receipt, #print-receipt * { visibility: visible; }
+          #print-receipt {
+            position: fixed; top: 0; left: 0; width: 58mm;
+            max-width: 58mm; padding: 3mm; margin: 0;
+            box-shadow: none; border-radius: 0;
+          }
+          @page { size: 58mm auto; margin: 0; }
+        }
+      `}</style>
       <header className="border-b border-[#F0D3DE] bg-[#FDF5F8] sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -743,6 +764,24 @@ export default function KasirApp() {
                     className="flex items-center gap-1 text-xs text-[#C23B57]"><ImageOff size={14} /> Hapus</button>
                 )}
               </div>
+            </div>
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Alamat (buat kop struk)</label>
+              <input value={settings.address} onChange={(e) => setSettings((s) => ({ ...s, address: e.target.value }))}
+                placeholder="mis. Jl. Contoh No. 1, Kota"
+                className="w-full border border-[#F0D3DE] rounded-md px-2 py-1.5 text-sm outline-none focus:border-[#D6336C]" />
+            </div>
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Nomor telepon (buat kop struk)</label>
+              <input value={settings.phone} onChange={(e) => setSettings((s) => ({ ...s, phone: e.target.value }))}
+                placeholder="mis. 0812xxxxxxx"
+                className="w-full border border-[#F0D3DE] rounded-md px-2 py-1.5 text-sm outline-none focus:border-[#D6336C]" />
+            </div>
+            <div>
+              <label className="text-xs text-[#9C7885] block mb-1">Tagline (buat kop struk)</label>
+              <input value={settings.tagline} onChange={(e) => setSettings((s) => ({ ...s, tagline: e.target.value }))}
+                placeholder="mis. ready to make your day better."
+                className="w-full border border-[#F0D3DE] rounded-md px-2 py-1.5 text-sm outline-none focus:border-[#D6336C]" />
             </div>
             <div>
               <label className="text-xs text-[#9C7885] block mb-1">Pajak per transaksi (%)</label>
@@ -967,6 +1006,23 @@ export default function KasirApp() {
         <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-30 p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm p-5">
             <div className="flex items-center justify-between mb-3"><h3 className="font-semibold">Pembayaran</h3><button onClick={() => setCheckoutOpen(false)}><X size={18} /></button></div>
+            <label className="text-xs text-[#9C7885] block mb-1">Nama pembeli (opsional)</label>
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="mis. Ezzy"
+              className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-3 outline-none focus:border-[#D6336C]" />
+            <label className="text-xs text-[#9C7885] block mb-1">Tipe pesanan</label>
+            <div className="flex gap-2 mb-3">
+              {["Dine In", "Take Away"].map((t) => (
+                <button key={t} onClick={() => setOrderType(t)}
+                  className={`flex-1 py-2 rounded-lg text-xs font-medium border ${orderType === t ? "bg-[#3D1F2B] text-white border-[#3D1F2B]" : "border-[#F0D3DE] text-[#9C7885]"}`}>{t}</button>
+              ))}
+            </div>
+            {orderType === "Dine In" && (
+              <>
+                <label className="text-xs text-[#9C7885] block mb-1">Nomor meja</label>
+                <input value={tableNumber} onChange={(e) => setTableNumber(e.target.value)} placeholder="mis. 5"
+                  className="w-full border border-[#F0D3DE] rounded-lg px-3 py-2 text-sm mb-3 outline-none focus:border-[#D6336C]" />
+              </>
+            )}
             <div className="font-mono text-xs space-y-1 mb-3 pb-3 border-b border-dashed border-[#F0D3DE]">
               <div className="flex justify-between text-[#9C7885]"><span>Subtotal</span><span>{rupiah(subtotal)}</span></div>
               {promoDiscountTotal > 0 && (
@@ -1005,19 +1061,31 @@ export default function KasirApp() {
 
       {lastReceipt && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-30 p-4">
-          <div className="bg-white rounded-xl w-full max-w-xs p-5 font-mono text-xs relative">
-            <button onClick={() => setLastReceipt(null)} className="absolute right-3 top-3"><X size={16} /></button>
+          <div id="print-receipt" className="bg-white rounded-xl w-full max-w-xs p-5 font-mono text-xs relative">
+            <button onClick={() => setLastReceipt(null)} className="absolute right-3 top-3 print:hidden"><X size={16} /></button>
             <div className="text-center mb-2">
               {settings.logoUrl && (
                 <img src={settings.logoUrl} alt="Logo" className="w-10 h-10 object-cover rounded-md mx-auto mb-1" />
               )}
               <p className="font-bold text-sm">{settings.shopName}</p>
-              <p className="text-[#9C7885]">{new Date(lastReceipt.timestamp).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}</p>
+              {settings.address && <p className="text-[#9C7885] leading-tight">{settings.address}</p>}
+              {settings.phone && <p className="text-[#9C7885]">{settings.phone}</p>}
+              {settings.tagline && <p className="text-[#9C7885] italic">{settings.tagline}</p>}
             </div>
             <div className="border-t border-dashed border-[#F0D3DE] my-2" />
+            <div className="flex justify-between"><span>Nota</span><span>{lastReceipt.notaNumber}</span></div>
+            <div className="flex justify-between"><span>Tgl</span><span>{new Date(lastReceipt.timestamp).toLocaleDateString("id-ID", { day: "2-digit", month: "2-digit", year: "numeric" })} {new Date(lastReceipt.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}</span></div>
+            <div className="flex justify-between"><span>Nama</span><span>{lastReceipt.customerName || "-"}</span></div>
+            <div className="flex justify-between">
+              <span>Tipe</span>
+              <span>{lastReceipt.orderType}{lastReceipt.orderType === "Dine In" && lastReceipt.tableNumber ? ` · Meja ${lastReceipt.tableNumber}` : ""}</span>
+            </div>
+            <div className="border-t border-dashed border-[#F0D3DE] my-2" />
+            <p className="mb-1">Rincian Menu:</p>
             {lastReceipt.items.map((it, i) => (
               <div key={i} className="py-0.5">
-                <div className="flex justify-between"><span>{it.name} x{it.qty}</span><span>{rupiah(it.price * it.qty)}</span></div>
+                <div>{it.name}</div>
+                <div className="flex justify-between"><span>{it.qty} x {rupiah(it.price)}</span><span>{rupiah(it.price * it.qty)}</span></div>
                 {it.discountLabel && (
                   <div className="flex justify-between text-[10px] text-[#D6336C]"><span>↳ {it.discountLabel}</span><span>coret {rupiah(it.originalPrice)}</span></div>
                 )}
@@ -1028,12 +1096,18 @@ export default function KasirApp() {
             {lastReceipt.promoDiscount > 0 && <div className="flex justify-between"><span>Diskon promo</span><span>-{rupiah(lastReceipt.promoDiscount)}</span></div>}
             {lastReceipt.discount > 0 && <div className="flex justify-between"><span>Diskon</span><span>-{rupiah(lastReceipt.discount)}</span></div>}
             {lastReceipt.tax > 0 && <div className="flex justify-between"><span>Pajak</span><span>{rupiah(lastReceipt.tax)}</span></div>}
-            <div className="flex justify-between font-bold text-sm mt-1"><span>Total</span><span>{rupiah(lastReceipt.total)}</span></div>
-            <div className="flex justify-between mt-1"><span>{lastReceipt.payMethod}</span><span>{rupiah(lastReceipt.cash)}</span></div>
-            {lastReceipt.payMethod === "Tunai" && <div className="flex justify-between"><span>Kembali</span><span>{rupiah(lastReceipt.change)}</span></div>}
-            <div className="text-center mt-2 text-[#9C7885]">Kasir: {lastReceipt.staffName}</div>
-            <div className="text-center mt-1 text-[#9C7885]">Terima kasih!</div>
-            <button onClick={() => setLastReceipt(null)} className="w-full mt-3 bg-[#3D1F2B] text-white py-2 rounded-lg font-sans text-xs font-semibold">Tutup</button>
+            <div className="flex justify-between font-bold text-sm mt-1"><span>TOTAL</span><span>{rupiah(lastReceipt.total)}</span></div>
+            <div className="flex justify-between mt-1"><span>Bayar ({lastReceipt.payMethod})</span><span>{rupiah(lastReceipt.cash)}</span></div>
+            <div className="flex justify-between"><span>Sisa</span><span>{rupiah(lastReceipt.change)}</span></div>
+            <div className="flex justify-between font-semibold"><span>Status</span><span>LUNAS</span></div>
+            <div className="border-t border-dashed border-[#F0D3DE] my-2" />
+            <div className="text-center text-[#9C7885]">Kasir: {lastReceipt.staffName}</div>
+            <div className="text-center mt-1 text-[#9C7885]">Thank you! Have a lovely day.</div>
+            <button onClick={() => window.print()}
+              className="w-full mt-3 border border-[#3D1F2B] text-[#3D1F2B] py-2 rounded-lg font-sans text-xs font-semibold flex items-center justify-center gap-1.5 print:hidden">
+              <Printer size={14} /> Cetak Struk
+            </button>
+            <button onClick={() => setLastReceipt(null)} className="w-full mt-2 bg-[#3D1F2B] text-white py-2 rounded-lg font-sans text-xs font-semibold print:hidden">Tutup</button>
           </div>
         </div>
       )}
