@@ -2,9 +2,12 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Plus, Minus, Trash2, X, Coffee, Receipt, Package, History,
   Pencil, Check, Lock, LogOut, UserPlus, Shield, User, Delete, ClipboardList,
-  Tag, ImagePlus, ImageOff, BarChart3, Printer,
+  Tag, ImagePlus, ImageOff, BarChart3, Printer, FileSpreadsheet, FileText,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const rupiah = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
@@ -468,6 +471,84 @@ export default function KasirApp() {
     return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, 5);
   }, [reportData]);
 
+  function exportReportExcel() {
+    const wb = XLSX.utils.book_new();
+    const wsSummary = XLSX.utils.aoa_to_sheet([
+      ["Laporan Penjualan", settings.shopName],
+      ["Periode", reportData.rangeLabel],
+      [],
+      ["Total Omzet", reportTotal],
+      ["Jumlah Transaksi", reportCount],
+      ["Rata-rata per Transaksi", Math.round(reportAvg)],
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
+
+    const wsTransaksi = XLSX.utils.json_to_sheet(
+      reportData.rangeOrders.map((o) => ({
+        Nota: o.notaNumber || "-",
+        Tanggal: new Date(o.timestamp).toLocaleString("id-ID"),
+        Pembeli: o.customerName || "-",
+        Tipe: o.orderType || "-",
+        Item: o.items.map((it) => `${it.name} x${it.qty}`).join(", "),
+        Subtotal: o.subtotal,
+        Diskon: (o.promoDiscount || 0) + (o.discount || 0),
+        Pajak: o.tax,
+        Total: o.total,
+        Metode: o.payMethod,
+        Kasir: o.staffName,
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, wsTransaksi, "Transaksi");
+
+    const wsProduk = XLSX.utils.json_to_sheet(
+      topProducts.map((p, i) => ({ Peringkat: i + 1, Produk: p.name, "Qty Terjual": p.qty, Omzet: p.revenue }))
+    );
+    XLSX.utils.book_append_sheet(wb, wsProduk, "Produk Terlaris");
+
+    XLSX.writeFile(wb, `Laporan-${settings.shopName.replace(/\s+/g, "_")}-${reportPeriod}-${todayKey()}.xlsx`);
+    logActivity("export_laporan", `Excel · ${reportData.rangeLabel}`);
+  }
+
+  function exportReportPDF() {
+    const doc = new jsPDF();
+    doc.setFontSize(14);
+    doc.text(settings.shopName, 14, 16);
+    doc.setFontSize(10);
+    doc.text(`Laporan Penjualan · ${reportData.rangeLabel}`, 14, 23);
+    doc.text(`Total Omzet: ${rupiah(reportTotal)}`, 14, 30);
+    doc.text(`Jumlah Transaksi: ${reportCount}`, 14, 35);
+    doc.text(`Rata-rata per Transaksi: ${rupiah(reportAvg)}`, 14, 40);
+
+    autoTable(doc, {
+      startY: 46,
+      head: [["Nota", "Tanggal", "Pembeli", "Tipe", "Total", "Metode"]],
+      body: reportData.rangeOrders.map((o) => [
+        o.notaNumber || "-",
+        new Date(o.timestamp).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "short" }),
+        o.customerName || "-",
+        o.orderType || "-",
+        rupiah(o.total),
+        o.payMethod,
+      ]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [214, 51, 108] },
+    });
+
+    const finalY = doc.lastAutoTable.finalY + 8;
+    doc.setFontSize(11);
+    doc.text("Produk Terlaris", 14, finalY);
+    autoTable(doc, {
+      startY: finalY + 3,
+      head: [["Produk", "Qty Terjual", "Omzet"]],
+      body: topProducts.map((p) => [p.name, String(p.qty), rupiah(p.revenue)]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [214, 51, 108] },
+    });
+
+    doc.save(`Laporan-${settings.shopName.replace(/\s+/g, "_")}-${reportPeriod}-${todayKey()}.pdf`);
+    logActivity("export_laporan", `PDF · ${reportData.rangeLabel}`);
+  }
+
   if (!loaded) return <div className="min-h-screen bg-[#FDF5F8]" />;
 
   // ---------- Onboarding: create first admin ----------
@@ -850,6 +931,17 @@ export default function KasirApp() {
               </>
             )}
             <span className="text-xs text-[#9C7885] sm:ml-auto">{reportData.rangeLabel}</span>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={exportReportExcel} disabled={reportCount === 0}
+              className="flex-1 flex items-center justify-center gap-1.5 border border-[#F0D3DE] text-[#3D1F2B] text-xs font-medium py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#D6336C]">
+              <FileSpreadsheet size={14} /> Export Excel
+            </button>
+            <button onClick={exportReportPDF} disabled={reportCount === 0}
+              className="flex-1 flex items-center justify-center gap-1.5 border border-[#F0D3DE] text-[#3D1F2B] text-xs font-medium py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:border-[#D6336C]">
+              <FileText size={14} /> Export PDF
+            </button>
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -1266,6 +1358,7 @@ function actionLabel(action) {
     tambah_promo: "menambah promo",
     edit_promo: "mengubah promo",
     hapus_promo: "menghapus promo",
+    export_laporan: "mengekspor laporan",
   };
   return map[action] || action;
 }
