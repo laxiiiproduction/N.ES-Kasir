@@ -481,7 +481,6 @@ export default function KasirApp() {
       [],
       ["Total Omzet", reportTotal],
       ["Jumlah Transaksi", reportCount],
-      ["Produk Terjual (pcs)", totalQtySold],
       ["Rata-rata per Transaksi", Math.round(reportAvg)],
     ]);
     XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
@@ -520,11 +519,10 @@ export default function KasirApp() {
     doc.text(`Laporan Penjualan · ${reportData.rangeLabel}`, 14, 23);
     doc.text(`Total Omzet: ${rupiah(reportTotal)}`, 14, 30);
     doc.text(`Jumlah Transaksi: ${reportCount}`, 14, 35);
-    doc.text(`Produk Terjual: ${totalQtySold} pcs`, 14, 40);
-    doc.text(`Rata-rata per Transaksi: ${rupiah(reportAvg)}`, 14, 45);
+    doc.text(`Rata-rata per Transaksi: ${rupiah(reportAvg)}`, 14, 40);
 
     autoTable(doc, {
-      startY: 51,
+      startY: 46,
       head: [["Nota", "Tanggal", "Pembeli", "Tipe", "Total", "Metode"]],
       body: reportData.rangeOrders.map((o) => [
         o.notaNumber || "-",
@@ -948,7 +946,7 @@ export default function KasirApp() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Total Omzet</p>
               <p className="text-sm sm:text-base font-bold font-mono truncate">{rupiah(reportTotal)}</p>
@@ -956,10 +954,6 @@ export default function KasirApp() {
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Transaksi</p>
               <p className="text-sm sm:text-base font-bold font-mono">{reportCount}</p>
-            </div>
-            <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
-              <p className="text-[10px] text-[#9C7885]">Produk Terjual</p>
-              <p className="text-sm sm:text-base font-bold font-mono">{totalQtySold} pcs</p>
             </div>
             <div className="bg-white border border-[#F0D3DE] rounded-xl p-3">
               <p className="text-[10px] text-[#9C7885]">Rata-rata</p>
@@ -975,19 +969,22 @@ export default function KasirApp() {
           <div className="bg-white border border-[#F0D3DE] rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-[#9C7885] uppercase tracking-wide">Rincian Produk Terjual</h3>
-              {productSales.length > 0 && <span className="text-[10px] text-[#9C7885]">{productSales.length} produk · {totalQtySold} pcs</span>}
+              {productSales.length > 0 && <span className="text-[10px] text-[#9C7885]">{productSales.length} produk</span>}
             </div>
             {topProducts.length === 0 ? (
               <p className="text-sm text-[#9C7885] text-center py-6">Belum ada transaksi di periode ini.</p>
             ) : (
-              <div className="flex flex-col gap-2 max-h-80 overflow-y-auto">
-                {topProducts.map((p, i) => (
-                  <div key={p.name} className="flex items-center gap-3">
-                    <div className="w-6 h-6 rounded-full bg-[#FBEAF1] flex items-center justify-center text-[10px] font-bold text-[#D6336C] shrink-0">{i + 1}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{p.name}</div>
-                      <div className="text-[10px] text-[#9C7885]">{p.qty} terjual · {rupiah(p.revenue)}</div>
-                    </div>
+              <div className="flex flex-col gap-1 max-h-80 overflow-y-auto">
+                <div className="flex items-center gap-3 text-[10px] text-[#9C7885] uppercase tracking-wide pb-1.5 border-b border-[#F0D3DE]">
+                  <span className="flex-1">Produk</span>
+                  <span className="w-16 text-right">Qty</span>
+                  <span className="w-24 text-right">Total</span>
+                </div>
+                {topProducts.map((p) => (
+                  <div key={p.name} className="flex items-center gap-3 py-1 border-b border-[#FBEAF1] last:border-0">
+                    <span className="flex-1 min-w-0 text-sm truncate">{p.name}</span>
+                    <span className="w-16 text-right text-sm font-mono font-semibold text-[#D6336C]">{p.qty}</span>
+                    <span className="w-24 text-right text-xs font-mono text-[#9C7885]">{rupiah(p.revenue)}</span>
                   </div>
                 ))}
               </div>
